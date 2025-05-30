@@ -14,4 +14,6 @@ RUN apt-get update && \
 		pyMongo && \
     apt-get clean
 
+COPY superset_config.py /app/pythonpath/superset_config.py
+
 USER superset
