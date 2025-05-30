@@ -1,0 +1,12 @@
+FROM bitnami/spark:3.3.0
+
+USER root
+
+# Installer pip et les packages nécessaires
+RUN apt-get update && apt-get install -y python3-pip gcc g++ gfortran && \
+    pip3 install --upgrade pip && \
+    pip3 install numpy pandas scikit-learn matplotlib seaborn
+
+# Répertoire de l'app
+WORKDIR /app
+COPY ./app /app
