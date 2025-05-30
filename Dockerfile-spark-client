@@ -5,7 +5,7 @@ USER root
 # Installer pip et les packages nécessaires
 RUN apt-get update && apt-get install -y python3-pip gcc g++ gfortran && \
     pip3 install --upgrade pip && \
-    pip3 install numpy pandas scikit-learn matplotlib seaborn
+    pip3 install numpy pandas scikit-learn matplotlib seaborn tensorflow
 
 # Répertoire de l'app
 WORKDIR /app

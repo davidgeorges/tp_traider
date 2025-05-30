@@ -2,27 +2,50 @@ import pandas as pd
 import numpy as np
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
-
 from pyspark.sql import SparkSession
- 
-spark = SparkSession.builder.appName("LireTestParquet").getOrCreate()
- 
-# Lire le fichier Parquet dans HDFS
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import math
 
-df = spark.read.parquet("hdfs://namenode:9000/data/processed/train")
+# ----------------------------
+# 1. LIRE LES DONNÉES PARQUET
+# ----------------------------
 
-# Convertir le DataFrame Spark en DataFrame Pandas
-df = df.toPandas()
+spark = SparkSession.builder.appName("TrainLSTM").getOrCreate()
 
-# Vérifie les colonnes disponibles
-print(df.columns)
+train_df = spark.read.parquet("hdfs://namenode:9000/data/processed/train").toPandas()
+val_df = spark.read.parquet("hdfs://namenode:9000/data/processed/validation").toPandas()
+test_df = spark.read.parquet("hdfs://namenode:9000/data/processed/test").toPandas()
 
-# On suppose que la colonne pour entraîner le modèle s'appelle 'Close'
-# Sinon, adapte ici avec la colonne correcte
-data = df[['Close']].values
+# Extraire les valeurs normalisées (déjà entre 0 et 1)
+train_scaled = train_df["scaled"].apply(lambda x: x[0]).values
+val_scaled = val_df["scaled"].apply(lambda x: x[0]).values
+test_scaled = test_df["scaled"].apply(lambda x: x[0]).values
 
-# Modèle LSTM
+# ------------------------------------
+# 2. FONCTION POUR CRÉER LES SÉQUENCES
+# ------------------------------------
+
+def create_sequences(data, seq_length=60):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i + seq_length])
+        y.append(data[i + seq_length])
+    return np.array(X), np.array(y)
+
+X_train, y_train = create_sequences(train_scaled)
+X_val, y_val = create_sequences(val_scaled)
+X_test, y_test = create_sequences(test_scaled)
+
+# Reshape pour LSTM : (samples, time steps, features)
+X_train = X_train.reshape(-1, 60, 1)
+X_val = X_val.reshape(-1, 60, 1)
+X_test = X_test.reshape(-1, 60, 1)
+
+# ---------------------------
+# 3. CONSTRUIRE LE MODÈLE LSTM
+# ---------------------------
+
 model = Sequential([
     LSTM(64, return_sequences=True, input_shape=(60, 1)),
     Dropout(0.2),
@@ -33,51 +56,34 @@ model = Sequential([
 
 model.compile(optimizer='adam', loss='mse')
 
-# Entraînement
-from sklearn.model_selection import train_test_split
-
-# Diviser les données (par exemple, 80% entraînement, 20% validation)
-# Pour les séries temporelles, la division doit être chronologique !
-# Ne pas utiliser train_test_split directement si l'ordre est important.
-# On prend les 80% premières données pour l'entraînement et les 20% dernières pour la validation.
-
-train_size = int(len(X) * 0.8)
-X_train, X_val = X[:train_size], X[train_size:]
-y_train, y_val = y[:train_size], y[train_size:]
+# --------------------------
+# 4. ENTRAÎNEMENT DU MODÈLE
+# --------------------------
 
 model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_val, y_val))
 
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-import math
+# -------------------------------
+# 5. ÉVALUATION SUR VALIDATION
+# -------------------------------
 
-# Faire des prédictions sur l'ensemble de validation
-y_pred_val_scaled = model.predict(X_val)
+y_pred_val = model.predict(X_val)
 
-# Inverser la normalisation pour obtenir les valeurs réelles prédites
-# N'oubliez pas que scaler a été entraîné sur l'ensemble complet (scaled_data)
-# Si scaler est entraîné sur une seule colonne 'Close', il peut être unidimensionnel.
-# Assurez-vous que y_pred_val_scaled a la bonne forme (n_samples, 1) pour l'inversion.
-y_pred_val = scaler.inverse_transform(y_pred_val_scaled)
-y_val_actual = scaler.inverse_transform(y_val)
+rmse = math.sqrt(mean_squared_error(y_val, y_pred_val))
+mae = mean_absolute_error(y_val, y_pred_val)
 
+print(f"📈 RMSE validation : {rmse:.4f}")
+print(f"📉 MAE validation : {mae:.4f}")
 
-# Calculer les métriques
-rmse = math.sqrt(mean_squared_error(y_val_actual, y_pred_val))
-mae = mean_absolute_error(y_val_actual, y_pred_val)
+# -------------------------------
+# 6. VISUALISATION DES PRÉDICTIONS
+# -------------------------------
 
-print(f"RMSE sur l'ensemble de validation : {rmse:.2f}")
-print(f"MAE sur l'ensemble de validation : {mae:.2f}")
-
-# Pour MAPE, faites attention à la division par zéro si y_val_actual peut contenir 0
-# mape = np.mean(np.abs((y_val_actual - y_pred_val) / y_val_actual)) * 100
-import matplotlib.pyplot as plt
-
-# Tracer les valeurs réelles et les prédictions
 plt.figure(figsize=(15, 6))
-plt.plot(y_val_actual, label='Valeurs Réelles')
-plt.plot(y_pred_val, label='Prédictions du Modèle')
-plt.title('Prédictions du Modèle LSTM vs Valeurs Réelles')
-plt.xlabel('Temps')
-plt.ylabel('Valeur')
+plt.plot(y_val, label='Valeurs Réelles')
+plt.plot(y_pred_val, label='Prédictions')
+plt.title("Prédictions du LSTM sur l'ensemble de validation")
+plt.xlabel("Temps")
+plt.ylabel("Valeur Normalisée")
 plt.legend()
-plt.show()
+plt.grid(True)
+plt.savefig("/app/prediction_plot.png")
